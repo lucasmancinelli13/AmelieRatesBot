@@ -1,9 +1,9 @@
 # Amelie — Direct Line OTC (Scheduler + Aprobación + Manuales)
 # Requisitos: python-telegram-bot==21.6, tzdata
-# Variables en Render:
+# Env vars en Render:
 # TELEGRAM_BOT_TOKEN=...
-# ADMIN_GROUP_ID=-100xxxxxxxxxx              (tu grupo APROBACIONES DIRECT LINE)
-# CHANNEL_TARGET=@TuCanalPublico o -100xxxx (tu canal de clientes)
+# ADMIN_GROUP_ID=-100xxxxxxxxxx              (grupo APROBACIONES DIRECT LINE)
+# CHANNEL_TARGET=@TuCanalPublico o -100xxxx (canal de clientes)
 # TIMEZONE=America/Argentina/Buenos_Aires
 # POST_TIMES=09:00,12:30,15:30              (horarios de publicación)
 # PREVIEW_OFFSET_MINUTES=10                 (minutos antes para pre‑editar)
@@ -11,7 +11,10 @@
 import os, re, datetime
 from zoneinfo import ZoneInfo
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
+    ContextTypes, filters, JobQueue
+)
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
@@ -20,10 +23,10 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Buenos_Aires")
 POST_TIMES = os.getenv("POST_TIMES", "09:00,12:30,15:30")
 PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 
-# ---------- Plantilla definitiva (la tuya) ----------
+# ---------- Plantilla definitiva ----------
 def plantilla_cotizaciones(now: datetime.datetime) -> str:
     fecha = now.strftime("%d/%m/%y")
-    hora = now.strftime("%H:%M").lstrip("0")  # ej. 9:00 → "9:00"
+    hora = now.strftime("%H:%M").lstrip("0")
     return f"""𝗗𝗜𝗥𝗘𝗖𝗧 𝗟𝗜𝗡𝗘 𝗢𝗧𝗖 — 𝗔𝗖𝗧𝗨𝗔𝗟𝗜𝗭𝗔𝗖𝗜𝗢́𝗡 𝗗𝗘 𝗧𝗔𝗦𝗔𝗦 〰️
 Tu línea directa a la rentabilidad
 
@@ -105,7 +108,7 @@ def parse_times(times_str: str):
     return out
 
 # Estado en memoria:
-# bot_data["pending"][token] = {"text": ..., "preview_msg_id": int}
+# bot_data["pending"][token] = {"text": ..., "preview_id": int}
 def pending_store(context: ContextTypes.DEFAULT_TYPE, token: str, text: str, preview_id: int):
     context.bot_data.setdefault("pending", {})[token] = {"text": text, "preview_id": preview_id}
 
@@ -120,11 +123,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Amelie lista ✨\n\n"
         "Comandos:\n"
-        "/plantilla — Enviar plantilla de cotizaciones (manual, con aprobación)\n"
-        "/mensaje — Publicar texto libre (manual, con aprobación)\n"
-        "/test_preview — Simular la previa del siguiente horario\n"
+        "/plantilla — Plantilla de cotizaciones (manual, con aprobación)\n"
+        "/mensaje — Texto libre (manual, con aprobación)\n"
+        "/test_preview — Simular la previa ahora\n"
         "/schedule — Ver horarios\n"
-        "/id — Mostrar chat_id (útil para IDs)\n"
+        "/id — Mostrar chat_id\n"
     )
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -138,9 +141,8 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Grupo aprobación: {ADMIN_GROUP_ID}"
     )
 
-# --- Previas automáticas (10 min antes) y publicación ---
 async def send_preview_cotizacion(context: ContextTypes.DEFAULT_TYPE, manual: bool=False):
-    """Envía al grupo interno la plantilla para editar + aprobar. Si manual=True, no calcula hora."""
+    """Envía la plantilla al grupo para editar + aprobar."""
     tz = ZoneInfo(TIMEZONE)
     now = datetime.datetime.now(tz)
     text = plantilla_cotizaciones(now)
@@ -151,7 +153,6 @@ async def send_preview_cotizacion(context: ContextTypes.DEFAULT_TYPE, manual: bo
         [InlineKeyboardButton("⏭️ Omitir", callback_data=f"skip:{token}")]
     ])
 
-    # Mensaje guía
     guide = await context.bot.send_message(
         chat_id=ADMIN_GROUP_ID,
         text="📋 PREVIA DE COTIZACIÓN\n"
@@ -159,9 +160,7 @@ async def send_preview_cotizacion(context: ContextTypes.DEFAULT_TYPE, manual: bo
              "2) Tocá “Aprobar y Publicar” para enviarlo al canal",
         reply_markup=kb
     )
-    # Plantilla (responder a este)
-    plant = await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=text, reply_to_message_id=guide.message_id)
-
+    await context.bot.send_message(chat_id=ADMIN_GROUP_ID, text=text, reply_to_message_id=guide.message_id)
     pending_store(context, token, text, guide.message_id)
 
 async def send_preview_manual_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -181,23 +180,20 @@ async def send_preview_manual_text(update: Update, context: ContextTypes.DEFAULT
     pending_store(context, token, "(vacío — a definir por respuesta)", guide.message_id)
 
 async def cmd_plantilla(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Enviar plantilla al chat donde se ejecuta (usalo en el grupo interno)
     await send_preview_cotizacion(context, manual=True)
 
 async def cmd_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_preview_manual_text(update, context)
 
 async def cmd_test_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Simula la previa de cotización
     await send_preview_cotizacion(context, manual=True)
 
 async def on_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Si responden al mensaje guía de la previa con texto, se actualiza lo pendiente."""
+    """Actualiza el texto si responden al mensaje guía de la previa."""
     if update.effective_chat.id != ADMIN_GROUP_ID:
         return
     if not update.message or not update.message.reply_to_message:
         return
-    # Buscar token activo cuyo preview_id coincida con el reply_to
     reply_to_id = update.message.reply_to_message.message_id
     pend = context.bot_data.get("pending", {})
     for token, data in pend.items():
@@ -225,21 +221,32 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await q.edit_message_text("✅ Publicado en el canal.")
         except Exception as e:
             await q.edit_message_text(f"❌ Error al publicar: {e}")
-        # Limpiar
         context.bot_data["pending"].pop(token, None)
     elif action == "skip":
         context.bot_data["pending"].pop(token, None)
         await q.edit_message_text("⏭️ Omitido.")
 
 def schedule_jobs(app: Application):
+    """Programa previas 10 min antes de cada horario, asegurando JobQueue."""
     tz = ZoneInfo(TIMEZONE)
+
+    # Asegurar JobQueue
+    jq = app.job_queue
+    if jq is None:
+        jq = JobQueue()
+        jq.set_application(app)
+        jq.start()
+        app.job_queue = jq
+
     # Previa (10 min antes)
     for hh, mm in parse_times(POST_TIMES):
-        prev_hh, prev_mm = hh, mm - PREVIEW_OFFSET_MINUTES
-        prev_date = datetime.datetime(2000,1,1,hh,mm,tzinfo=tz) - datetime.timedelta(minutes=PREVIEW_OFFSET_MINUTES)
-        prev_hh, prev_mm = prev_date.hour, prev_date.minute
-        app.job_queue.run_daily(send_preview_cotizacion, time=datetime.time(prev_hh, prev_mm, tzinfo=tz), name=f"pre_{hh:02d}{mm:02d}")
-    # (Publicación final se hace cuando aprobás. Si no aprobás, no se publica.)
+        base = datetime.datetime(2000, 1, 1, hh, mm, tzinfo=tz)
+        prev = base - datetime.timedelta(minutes=PREVIEW_OFFSET_MINUTES)
+        jq.run_daily(
+            send_preview_cotizacion,
+            time=datetime.time(prev.hour, prev.minute, tzinfo=tz),
+            name=f"pre_{hh:02d}{mm:02d}"
+        )
 
 def build_app():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -251,7 +258,6 @@ def build_app():
     app.add_handler(CommandHandler("mensaje", cmd_mensaje))
     app.add_handler(CommandHandler("test_preview", cmd_test_preview))
     app.add_handler(CallbackQueryHandler(on_button))
-    # Capturar textos que respondan a una previa
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), on_reply))
     return app
 
