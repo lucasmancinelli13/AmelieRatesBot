@@ -26,58 +26,60 @@ PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 # ---------- Plantilla definitiva ----------
 def plantilla_cotizaciones(now: datetime.datetime) -> str:
     fecha = now.strftime("%d/%m/%y")
-    hora = now.strftime("%H:%M").lstrip("0")
+    hora = now.strftime("%H:%M")  # ej. 15:20
     return f"""𝗗𝗜𝗥𝗘𝗖𝗧 𝗟𝗜𝗡𝗘 𝗢𝗧𝗖 — 𝗔𝗖𝗧𝗨𝗔𝗟𝗜𝗭𝗔𝗖𝗜𝗢́𝗡 𝗗𝗘 𝗧𝗔𝗦𝗔𝗦 〰️
 Tu línea directa a la rentabilidad
 
 📅 {fecha} · 🕘 {hora} hs
 
-━━━━ 𝗣𝗥𝗢𝗠𝗢𝗖𝗜𝗢𝗡𝗘𝗦 💥 ━━━━
-➡️ USDT → Peso: 1315 ARS
-➡️ USD → USDT: 0,00%
-➡️ USDT → USD: -0,75% 
+━━━━ LIQUIDACION! 💥  
+➡️ USDT → ARS:  
+➡️ USD → USDT:  
+➡️ USDT → USD:  
 
-━━━━ 𝗖𝗥𝗬𝗣𝗧𝗢 / 𝗙𝗜𝗔𝗧 🪙 ━━━━
+━━━━ 𝗖𝗥𝗬𝗣𝗧𝗢 / 𝗙𝗜𝗔𝗧 🪙  
 ➡️ USDT → ARS: 1330 / 1310
 ➡️ USD → USDT: 0,25%
 
-━━━━ 𝗙𝗜𝗔𝗧 💵 ━━━━
+━━━━ 𝗙𝗜𝗔𝗧 💵  
 ➡️ USD → ARS: 1340 / 1315
 ➡️ EUR → ARS: 1450 / 1550
 ➡️ EUR → USD: 1,195 / 1,16
 
-━━━━ 𝗥𝗘𝗔𝗟𝗘𝗦 (𝗣𝗜𝗫) 🇧🇷 ━━━━
+━━━━ 𝗥𝗘𝗔𝗟𝗘𝗦 (𝗣𝗜𝗫) 🇧🇷  
 ➡️ BRL → ARS: 236,44 ARS
 ➡️ BRL → USDT: 5,56
 
-━━━━ 𝗨𝗦𝗔 (𝗭𝗲𝗹𝗹𝗲 / 𝗔𝗖𝗛 / 𝗪𝗶𝗿𝗲) 🇺🇸 ━━━━
+━━━━ 𝗨𝗦𝗔 (𝗭𝗲𝗹𝗹𝗲 / 𝗔𝗖𝗛 / 𝗪𝗶𝗿𝗲) 🇺🇸  
 ➡️ USD💳 → USD CASH: -3,00%
 ➡️ USD💳 → USDT: -2,25%
 ➕ costos de transferencia
 
-━━━━ 𝗜𝗡𝗧𝗘𝗥𝗡𝗔𝗖𝗜𝗢𝗡𝗔𝗟 (𝗦𝗪𝗜𝗙𝗧 / 𝗦𝗘𝗣𝗔) 🌍 ━━━━
-➡️ USD💳 → USD CASH: -3,00%
-➡️ USD💳 → USDT: -2,25%
+━━━━ 𝗜𝗡𝗧𝗘𝗥𝗡𝗔𝗖𝗜𝗢𝗡𝗔𝗟 (𝗦𝗪𝗜𝗙𝗧 / 𝗦𝗘𝗣𝗔) 🌍 
+➡️ USD💳 → USD CASH: -3,75% 
+➡️ USD💳 → USDT: -3,5% 
 ➕ costos bancarios
 
-━━━━ 𝗕𝗔𝗡𝗞 𝗧𝗥𝗔𝗡𝗦𝗙𝗘𝗥𝗦 🏦 ━━━━
+━━━━ 𝗕𝗔𝗡𝗞 𝗧𝗥𝗔𝗡𝗦𝗙𝗘𝗥𝗦 🏦  
 ➡️ ARS💳 → USDT: 1330 / 1310
 ➡️ ARS💳 → USD: 1340 / 1305
 
-━━━━ 𝗪𝗔𝗟𝗟𝗘𝗧𝗦 𝗗𝗜𝗚𝗜𝗧𝗔𝗟𝗘𝗦 💼 ━━━━
+━━━━ 𝗪𝗔𝗟𝗟𝗘𝗧𝗦 𝗗𝗜𝗚𝗜𝗧𝗔𝗟𝗘𝗦 💼 
 ➡️ Payoneer 🇺🇸 → USDT: -4,00%
-➡️ Skrill 🇺🇸 → USDT: -4,00%
+➡️ Skrill 🇺🇸 → USDT: -5% 
 ➡️ Wise 🇺🇸 → USDT: -3,75%
 ➡️ PayPal → USDT: -13,5% (24–48 h)
 
-━━━━ 𝗢𝗧𝗥𝗔𝗦 𝗠𝗢𝗡𝗘𝗗𝗔𝗦 💸 ━━━━
+━━━━ 𝗢𝗧𝗥𝗔𝗦 𝗠𝗢𝗡𝗘𝗗𝗔𝗦 💸 
 ➡️ RUB → USDT: 85,3
 ➡️ USDT → RUB: 78
-➡️ GBP → USDT: Consultar
-➡️ EUR → USDT: Consultar
-➡️ CHF → USDT: Consultar
+➡️ GBP → USDT: 
+➡️ EUR → USDT: 
+➡️ CHF → USDT: 
 
-━━━━ 𝗘𝗦𝗧𝗥𝗨𝗖𝗧𝗨𝗥𝗔 𝗘𝗠𝗣𝗥𝗘𝗦𝗔𝗥𝗜𝗔𝗟 🧭 ━━━━
+(consultar por mesa OTC)
+
+━━━━ 𝗘𝗦𝗧𝗥𝗨𝗖𝗧𝗨𝗥𝗔 𝗘𝗠𝗣𝗥𝗘𝗦𝗔𝗥𝗜𝗔𝗟 🧭  
 ¿Facturás global y tu banco local te frena?
 ➡️ LLC, LTD, LLP en USA · Hong Kong · Panamá · Europa
 ➡️ Cuentas bancarias multidivisa (USD/EUR/GBP) y pasarelas de cobro compatibles
@@ -85,10 +87,11 @@ Tu línea directa a la rentabilidad
 ➡️ Roadmap 1:1 para elegir jurisdicción, impuestos y bancos sin fricción
 Diagnóstico express sin costo. Tu estructura, a tu nombre, lista para escalar.
 
-📍 Sedes: San Isidro • CABA • La Plata • Mar del Plata
+📍 SEDES: San Isidro • Caba • La Plata • Mar del Plata 
 📱 EXCHANGE CONTACT: @growym
-⚠️ Tasas dinámicas: confirmar al momento por volatilidad.
+⚠️ Tasas dinámicas: las cotizaciones pueden variar durante el dia por volatilidad.
 """
+
 
 def parse_channel_target(val: str):
     if not val:
