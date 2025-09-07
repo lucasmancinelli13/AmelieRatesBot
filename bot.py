@@ -1,21 +1,22 @@
-# Amelie — Direct Line OTC (Scheduler + Aprobación + Manuales)
-# Requisitos: python-telegram-bot==21.6, tzdata
-# Env vars en Render:
-# TELEGRAM_BOT_TOKEN=...
-# ADMIN_GROUP_ID=-100xxxxxxxxxx              (grupo APROBACIONES DIRECT LINE)
-# CHANNEL_TARGET=@TuCanalPublico o -100xxxx (canal de clientes)
-# TIMEZONE=America/Argentina/Buenos_Aires
-# POST_TIMES=09:00,12:30,15:30              (horarios de publicación)
-# PREVIEW_OFFSET_MINUTES=10                 (minutos antes para pre‑editar)
+# Amelie — Direct Line OTC (plantillas + onboarding + Google Sheets + bienvenida/pin)
+# Requisitos: ver requirements.txt
 
-import os, re, datetime
+import os, re, json, datetime, logging, urllib.parse
 from zoneinfo import ZoneInfo
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    ContextTypes, filters, JobQueue
+    ContextTypes, filters, JobQueue, ConversationHandler
 )
 
+import gspread
+from google.oauth2.service_account import Credentials
+
+# ---------- Logging ----------
+logging.basicConfig(level=logging.INFO)
+
+# ---------- Env vars ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
 CHANNEL_TARGET = os.getenv("CHANNEL_TARGET")
@@ -23,7 +24,55 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Buenos_Aires")
 POST_TIMES = os.getenv("POST_TIMES", "09:00,12:30,15:30")
 PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 
-# ---------- Plantilla definitiva ----------
+# Números de WhatsApp (por ENV o por defecto a los que nos pasaste)
+WA_NUMBER_OPERATIVAS = os.getenv("WA_NUMBER_OPERATIVAS", "5491158770793")  # Operaciones
+WA_NUMBER_EMPRESAS   = os.getenv("WA_NUMBER_EMPRESAS",   "5491157537192")  # Empresas
+
+GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
+GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
+
+# ---------- Helpers ----------
+def parse_channel_target(val: str):
+    if not val:
+        return None
+    val = val.strip()
+    if re.fullmatch(r"-?\d+", val):
+        return int(val)  # -100...
+    return val          # @tu_canal
+
+def parse_times(times_str: str):
+    out = []
+    for t in times_str.split(","):
+        t = t.strip()
+        if not t: continue
+        hh, mm = t.split(":")
+        out.append((int(hh), int(mm)))
+    return out
+
+def get_sheet():
+    """Devuelve la primera hoja del spreadsheet conectado."""
+    if not GOOGLE_SHEET_ID:
+        raise SystemExit("Falta GOOGLE_SHEET_ID")
+    if not GOOGLE_SHEETS_CREDENTIALS_JSON:
+        raise SystemExit("Falta GOOGLE_SHEETS_CREDENTIALS_JSON")
+
+    creds_dict = json.loads(GOOGLE_SHEETS_CREDENTIALS_JSON)
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(GOOGLE_SHEET_ID)
+    return sh.sheet1  # usa la 1ª pestaña
+
+def log_lead(row_dict: dict):
+    """
+    row_dict: {"fecha","nombre","pais","flujo","detalle","cod_promocional","wa_link"}
+    """
+    ws = get_sheet()
+    headers = ["fecha", "nombre", "pais", "flujo", "detalle", "cod_promocional", "wa_link"]
+    row = [row_dict.get(h, "") for h in headers]
+    ws.append_row(row, value_input_option="USER_ENTERED")
+
+# ---------- Plantilla de cotizaciones ----------
 def plantilla_cotizaciones(now: datetime.datetime) -> str:
     fecha = now.strftime("%d/%m/%y")
     hora = now.strftime("%H:%M")  # ej. 15:20
@@ -92,26 +141,7 @@ Diagnóstico express sin costo. Tu estructura, a tu nombre, lista para escalar.
 ⚠️ Tasas dinámicas: las cotizaciones pueden variar durante el dia por volatilidad.
 """
 
-
-def parse_channel_target(val: str):
-    if not val:
-        return None
-    val = val.strip()
-    if re.fullmatch(r"-?\d+", val):
-        return int(val)  # -100...
-    return val          # @tu_canal
-
-def parse_times(times_str: str):
-    out = []
-    for t in times_str.split(","):
-        t = t.strip()
-        if not t: continue
-        hh, mm = t.split(":")
-        out.append((int(hh), int(mm)))
-    return out
-
-# Estado en memoria:
-# bot_data["pending"][token] = {"text": ..., "preview_id": int}
+# ---------- Estado en memoria ----------
 def pending_store(context: ContextTypes.DEFAULT_TYPE, token: str, text: str, preview_id: int):
     context.bot_data.setdefault("pending", {})[token] = {"text": text, "preview_id": preview_id}
 
@@ -122,15 +152,18 @@ def pending_set_text(context: ContextTypes.DEFAULT_TYPE, token: str, new_text: s
     if token in context.bot_data.get("pending", {}):
         context.bot_data["pending"][token]["text"] = new_text
 
+# ---------- Comandos base ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info("Recibí /start de %s", update.effective_user.id)
     await update.message.reply_text(
-        "Amelie lista ✨\n\n"
-        "Comandos:\n"
-        "/plantilla — Plantilla de cotizaciones (manual, con aprobación)\n"
-        "/mensaje — Texto libre (manual, con aprobación)\n"
-        "/test_preview — Simular la previa ahora\n"
-        "/schedule — Ver horarios\n"
-        "/id — Mostrar chat_id\n"
+        "Hola, soy *Amelie*, asistente virtual de **Direct Line OTC** ✨\n\n"
+        "¿Cómo te ayudo hoy?\n"
+        "• /operativa — Onboarding operativas financieras\n"
+        "• /empresa — Onboarding apertura de empresas\n"
+        "• /plantilla — Plantilla de cotizaciones (manual, con aprobación)\n"
+        "• /mensaje — Texto libre (manual, con aprobación)\n"
+        "• /schedule — Ver horarios\n",
+        parse_mode="Markdown"
     )
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,12 +177,29 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Grupo aprobación: {ADMIN_GROUP_ID}"
     )
 
+# ---------- Comando para publicar y fijar bienvenida en el canal ----------
+async def cmd_bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = (
+        "👋 *Soy Amelie*, la asistente virtual de **Direct Line OTC**.\n\n"
+        "Estoy para ayudarte con:\n"
+        "1️⃣ *Operativas financieras* (/operativa)\n"
+        "2️⃣ *Apertura de empresas internacionales* (/empresa)\n\n"
+        "Elegí una opción y te guío paso a paso. 💼💱"
+    )
+    dest = parse_channel_target(CHANNEL_TARGET)
+    msg = await context.bot.send_message(chat_id=dest, text=texto, parse_mode="Markdown")
+    try:
+        await context.bot.pin_chat_message(chat_id=dest, message_id=msg.message_id, disable_notification=True)
+    except Exception as e:
+        logging.warning("No pude fijar el mensaje: %s", e)
+    await update.message.reply_text("✅ Mensaje de bienvenida publicado en el canal. Si tengo permiso, quedó fijado.")
+
+# ---------- Previas automáticas ----------
 async def send_preview_cotizacion(context: ContextTypes.DEFAULT_TYPE, manual: bool=False):
-    """Envía la plantilla al grupo para editar + aprobar."""
     tz = ZoneInfo(TIMEZONE)
     now = datetime.datetime.now(tz)
     text = plantilla_cotizaciones(now)
-    token = now.strftime("%Y%m%d%H%M%S")  # token único
+    token = now.strftime("%Y%m%d%H%M%S")
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Aprobar y Publicar", callback_data=f"approve:{token}")],
@@ -192,7 +242,6 @@ async def cmd_test_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_preview_cotizacion(context, manual=True)
 
 async def on_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Actualiza el texto si responden al mensaje guía de la previa."""
     if update.effective_chat.id != ADMIN_GROUP_ID:
         return
     if not update.message or not update.message.reply_to_message:
@@ -230,18 +279,13 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("⏭️ Omitido.")
 
 def schedule_jobs(app: Application):
-    """Programa previas 10 min antes de cada horario, asegurando JobQueue."""
     tz = ZoneInfo(TIMEZONE)
-
-    # Asegurar JobQueue
     jq = app.job_queue
     if jq is None:
         jq = JobQueue()
         jq.set_application(app)
         jq.start()
         app.job_queue = jq
-
-    # Previa (10 min antes)
     for hh, mm in parse_times(POST_TIMES):
         base = datetime.datetime(2000, 1, 1, hh, mm, tzinfo=tz)
         prev = base - datetime.timedelta(minutes=PREVIEW_OFFSET_MINUTES)
@@ -251,8 +295,156 @@ def schedule_jobs(app: Application):
             name=f"pre_{hh:02d}{mm:02d}"
         )
 
+# ---------- Onboarding: Operativas ----------
+OP_NAME, OP_COUNTRY, OP_TYPE, OP_PROMO = range(4)
+
+async def op_start(update, context):
+    await update.message.reply_text(
+        "🪙 *Operativas financieras*\n\n"
+        "1) ¿Cuál es tu *nombre*?",
+        parse_mode="Markdown"
+    )
+    return OP_NAME
+
+async def op_name(update, context):
+    context.user_data["nombre"] = update.message.text.strip()
+    await update.message.reply_text("2) ¿En qué *país* estás?", parse_mode="Markdown")
+    return OP_COUNTRY
+
+async def op_country(update, context):
+    context.user_data["pais"] = update.message.text.strip()
+    await update.message.reply_text(
+        "3) ¿Qué *tipo de operación* necesitás? (Ej.: USDT↔ARS, USD↔USDT, transferencia internacional, etc.)",
+        parse_mode="Markdown"
+    )
+    return OP_TYPE
+
+async def op_type(update, context):
+    context.user_data["tipo"] = update.message.text.strip()
+    await update.message.reply_text(
+        "4) ¿Tenés *código promocional*? Si sí, escribilo. Si no, respondé “No”.",
+        parse_mode="Markdown"
+    )
+    return OP_PROMO
+
+async def op_promo(update, context):
+    promo = update.message.text.strip()
+    if promo.lower() == "no":
+        promo = ""
+    context.user_data["promo"] = promo
+
+    nombre = context.user_data.get("nombre","")
+    pais   = context.user_data.get("pais","")
+    tipo   = context.user_data.get("tipo","")
+
+    msg = (
+        f"Hola, mi nombre es {nombre}. Te escribo por una *operativa*.\n"
+        f"País: {pais}\n"
+        f"Tipo: {tipo}\n"
+        f"Código promocional: {promo if promo else '—'}"
+    )
+    wa_text = urllib.parse.quote(msg)
+    wa_link = f"https://wa.me/{WA_NUMBER_OPERATIVAS}?text={wa_text}"
+
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+    log_lead({
+        "fecha": now,
+        "nombre": nombre,
+        "pais": pais,
+        "flujo": "Operativa",
+        "detalle": tipo,
+        "cod_promocional": promo,
+        "wa_link": wa_link
+    })
+
+    await update.message.reply_text(
+        "✅ ¡Gracias! Te derivo con el equipo operativo.\n"
+        f"Tocá este enlace para continuar por WhatsApp:\n{wa_link}",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+async def op_cancel(update, context):
+    await update.message.reply_text("Operativa cancelada. Podés reiniciar con /operativa.")
+    return ConversationHandler.END
+
+# ---------- Onboarding: Empresas ----------
+EM_NAME, EM_COUNTRY, EM_RUBRO, EM_JURIS = range(4)
+
+async def em_start(update, context):
+    await update.message.reply_text(
+        "🏢 *Apertura de empresas internacionales*\n\n"
+        "1) ¿Cuál es tu *nombre*?",
+        parse_mode="Markdown"
+    )
+    return EM_NAME
+
+async def em_name(update, context):
+    context.user_data["nombre"] = update.message.text.strip()
+    await update.message.reply_text("2) ¿En qué *país* operás actualmente?", parse_mode="Markdown")
+    return EM_COUNTRY
+
+async def em_country(update, context):
+    context.user_data["pais"] = update.message.text.strip()
+    await update.message.reply_text(
+        "3) ¿A qué *rubro* pertenece tu negocio? (Ej.: e-commerce, agencia, servicios, etc.)",
+        parse_mode="Markdown"
+    )
+    return EM_RUBRO
+
+async def em_rubro(update, context):
+    context.user_data["rubro"] = update.message.text.strip()
+    await update.message.reply_text(
+        "4) ¿Ya tenés una *jurisdicción* en mente? (USA, Panamá, Hong Kong, Europa, etc.)",
+        parse_mode="Markdown"
+    )
+    return EM_JURIS
+
+async def em_juris(update, context):
+    context.user_data["juris"] = update.message.text.strip()
+
+    nombre = context.user_data.get("nombre","")
+    pais   = context.user_data.get("pais","")
+    rubro  = context.user_data.get("rubro","")
+    juris  = context.user_data.get("juris","")
+
+    msg = (
+        f"Hola, mi nombre es {nombre}. Te escribo porque *agendé una llamada* por *apertura de empresa*.\n"
+        f"País: {pais}\n"
+        f"Rubro: {rubro}\n"
+        f"Jurisdicción de interés: {juris}"
+    )
+    wa_text = urllib.parse.quote(msg)
+    wa_link = f"https://wa.me/{WA_NUMBER_EMPRESAS}?text={wa_text}"
+
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+    log_lead({
+        "fecha": now,
+        "nombre": nombre,
+        "pais": pais,
+        "flujo": "Empresa",
+        "detalle": f"Rubro: {rubro} | Jurisdicción: {juris}",
+        "cod_promocional": "",
+        "wa_link": wa_link
+    })
+
+    await update.message.reply_text(
+        "✅ ¡Perfecto! Tocá este enlace para coordinar por WhatsApp:\n" + wa_link,
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+async def em_cancel(update, context):
+    await update.message.reply_text("Proceso cancelado. Podés reiniciar con /empresa.")
+    return ConversationHandler.END
+
+# ---------- App ----------
 def build_app():
     app = Application.builder().token(BOT_TOKEN).build()
+
+    # Comandos base
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("id", cmd_id))
@@ -260,8 +452,36 @@ def build_app():
     app.add_handler(CommandHandler("plantilla", cmd_plantilla))
     app.add_handler(CommandHandler("mensaje", cmd_mensaje))
     app.add_handler(CommandHandler("test_preview", cmd_test_preview))
+    app.add_handler(CommandHandler("bienvenida", cmd_bienvenida))  # publica y fija el mensaje de bienvenida
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), on_reply))
+
+    # Conversación Operativa
+    conv_op = ConversationHandler(
+        entry_points=[CommandHandler("operativa", op_start)],
+        states={
+            OP_NAME:    [MessageHandler(filters.TEXT & (~filters.COMMAND), op_name)],
+            OP_COUNTRY: [MessageHandler(filters.TEXT & (~filters.COMMAND), op_country)],
+            OP_TYPE:    [MessageHandler(filters.TEXT & (~filters.COMMAND), op_type)],
+            OP_PROMO:   [MessageHandler(filters.TEXT & (~filters.COMMAND), op_promo)],
+        },
+        fallbacks=[CommandHandler("cancel", op_cancel)],
+    )
+    app.add_handler(conv_op)
+
+    # Conversación Empresa
+    conv_em = ConversationHandler(
+        entry_points=[CommandHandler("empresa", em_start)],
+        states={
+            EM_NAME:    [MessageHandler(filters.TEXT & (~filters.COMMAND), em_name)],
+            EM_COUNTRY: [MessageHandler(filters.TEXT & (~filters.COMMAND), em_country)],
+            EM_RUBRO:   [MessageHandler(filters.TEXT & (~filters.COMMAND), em_rubro)],
+            EM_JURIS:   [MessageHandler(filters.TEXT & (~filters.COMMAND), em_juris)],
+        },
+        fallbacks=[CommandHandler("cancel", em_cancel)],
+    )
+    app.add_handler(conv_em)
+
     return app
 
 def main():
@@ -270,8 +490,14 @@ def main():
     if not CHANNEL_TARGET: raise SystemExit("Falta CHANNEL_TARGET")
 
     app = build_app()
-    schedule_jobs(app)  # programar previas
-    app.run_polling()
+
+    # Limpia cualquier webhook residual y descarta updates viejos (evita conflictos)
+    async def on_startup(app_):
+        await app_.bot.delete_webhook(drop_pending_updates=True)
+
+    app.post_init = on_startup
+    schedule_jobs(app)
+    app.run_polling(allowed_updates=None)
 
 if __name__ == "__main__":
     main()
