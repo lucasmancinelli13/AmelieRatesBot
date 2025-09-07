@@ -156,15 +156,13 @@ def pending_set_text(context: ContextTypes.DEFAULT_TYPE, token: str, new_text: s
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.info("Recibí /start de %s", update.effective_user.id)
     await update.message.reply_text(
-        "Hola, soy *Amelie*, asistente virtual de **Direct Line OTC** ✨\n\n"
-        "¿Cómo te ayudo hoy?\n"
-        "• /operativa — Onboarding operativas financieras\n"
-        "• /empresa — Onboarding apertura de empresas\n"
-        "• /plantilla — Plantilla de cotizaciones (manual, con aprobación)\n"
-        "• /mensaje — Texto libre (manual, con aprobación)\n"
-        "• /schedule — Ver horarios\n",
+        "👋 *Soy Amelie*, asistente virtual de **Direct Line OTC**.\n\n"
+        "¿Sobre qué querés hablar?\n"
+        "• /operativa — Operativas financieras\n"
+        "• /empresa — Apertura de empresas internacionales",
         parse_mode="Markdown"
     )
+
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(str(update.effective_chat.id))
@@ -452,11 +450,10 @@ def build_app():
     app.add_handler(CommandHandler("plantilla", cmd_plantilla))
     app.add_handler(CommandHandler("mensaje", cmd_mensaje))
     app.add_handler(CommandHandler("test_preview", cmd_test_preview))
-    app.add_handler(CommandHandler("bienvenida", cmd_bienvenida))  # publica y fija el mensaje de bienvenida
+    app.add_handler(CommandHandler("bienvenida", cmd_bienvenida))  # publica/fija en canal
     app.add_handler(CallbackQueryHandler(on_button))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), on_reply))
 
-    # Conversación Operativa
+    # 👉👉 PONER PRIMERO las conversaciones
     conv_op = ConversationHandler(
         entry_points=[CommandHandler("operativa", op_start)],
         states={
@@ -469,7 +466,6 @@ def build_app():
     )
     app.add_handler(conv_op)
 
-    # Conversación Empresa
     conv_em = ConversationHandler(
         entry_points=[CommandHandler("empresa", em_start)],
         states={
@@ -482,7 +478,11 @@ def build_app():
     )
     app.add_handler(conv_em)
 
+    # 👉👉 Recién DESPUÉS el handler genérico de respuestas (on_reply)
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), on_reply))
+
     return app
+
 
 def main():
     if not BOT_TOKEN: raise SystemExit("Falta TELEGRAM_BOT_TOKEN")
