@@ -24,13 +24,13 @@ logging.basicConfig(level=logging.INFO)
 
 # ---------- Env vars ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
+ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))  # -100...
 CHANNEL_TARGET = os.getenv("CHANNEL_TARGET")  # @TuCanal o -100...
 TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Buenos_Aires")
 POST_TIMES = os.getenv("POST_TIMES", "09:00,12:30,15:30")
 PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 
-# Nros WhatsApp (defaults cargados; podés sobreescribir por ENV)
+# Nros WhatsApp (defaults; podés sobreescribir por ENV)
 WA_NUMBER_OPERATIVAS = os.getenv("WA_NUMBER_OPERATIVAS", "5491158770793")
 WA_NUMBER_EMPRESAS = os.getenv("WA_NUMBER_EMPRESAS", "5491157537192")
 
@@ -169,7 +169,7 @@ WELCOME_TEXT = (
 
 # ---------- Comandos base ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Lo mantenemos por si alguien escribe /start, pero no es necesario con el activador por cualquier mensaje
+    # Por si alguien usa /start, pero no es necesario con el activador por cualquier mensaje privado
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -240,8 +240,8 @@ async def cmd_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_test_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_preview_cotizacion(context, manual=True)
 
+# Respuestas en el grupo de aprobación (solo si es reply al mensaje guía)
 async def on_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Solo escuchamos replies en el grupo de aprobación
     if update.effective_chat.id != ADMIN_GROUP_ID:
         return
     if not update.message or not update.message.reply_to_message:
@@ -346,17 +346,21 @@ async def op_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_OPERATIVAS}?text={wa_text}"
 
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-    log_lead({
-        "fecha": now,
-        "nombre": nombre,
-        "pais": pais,
-        "flujo": "Operativa",
-        "detalle": tipo,
-        "cod_promocional": promo,
-        "wa_link": wa_link
-    })
+    # Guardar en Sheets (no frenar si falla)
+    try:
+        tz = ZoneInfo(TIMEZONE)
+        now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+        log_lead({
+            "fecha": now,
+            "nombre": nombre,
+            "pais": pais,
+            "flujo": "Operativa",
+            "detalle": tipo,
+            "cod_promocional": promo,
+            "wa_link": wa_link
+        })
+    except Exception as e:
+        logging.warning("No pude registrar en Google Sheets (Operativa): %s", e)
 
     await update.message.reply_text(
         "✅ ¡Gracias! Te derivo con el equipo operativo.\n"
@@ -418,17 +422,21 @@ async def em_juris(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_EMPRESAS}?text={wa_text}"
 
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-    log_lead({
-        "fecha": now,
-        "nombre": nombre,
-        "pais": pais,
-        "flujo": "Empresa",
-        "detalle": f"Rubro: {rubro} | Jurisdicción: {juris}",
-        "cod_promocional": "",
-        "wa_link": wa_link
-    })
+    # Guardar en Sheets (no frenar si falla)
+    try:
+        tz = ZoneInfo(TIMEZONE)
+        now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+        log_lead({
+            "fecha": now,
+            "nombre": nombre,
+            "pais": pais,
+            "flujo": "Empresa",
+            "detalle": f"Rubro: {rubro} | Jurisdicción: {juris}",
+            "cod_promocional": "",
+            "wa_link": wa_link
+        })
+    except Exception as e:
+        logging.warning("No pude registrar en Google Sheets (Empresa): %s", e)
 
     await update.message.reply_text(
         "✅ ¡Perfecto! Tocá este enlace para coordinar por WhatsApp:\n" + wa_link,
@@ -477,7 +485,7 @@ def build_app():
     app.add_handler(CommandHandler("bienvenida", cmd_bienvenida))
     app.add_handler(CallbackQueryHandler(on_button))
 
-    # 👉 Conversaciones primero (para que no se “robe” mensajes el genérico)
+    # 👉 Conversaciones primero
     conv_op = ConversationHandler(
         entry_points=[CommandHandler("operativa", op_start)],
         states={
@@ -502,11 +510,21 @@ def build_app():
     )
     app.add_handler(conv_em)
 
-    # 👉 Handler genérico de replies (solo para el grupo de aprobación)
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), on_reply))
+    # 👉 Handler genérico de replies SOLO en el grupo de aprobación y SOLO si es reply
+    app.add_handler(
+        MessageHandler(
+            filters.Chat(chat_id=ADMIN_GROUP_ID) & filters.REPLY & filters.TEXT & (~filters.COMMAND),
+            on_reply
+        )
+    )
 
     # 👉 Activación por cualquier mensaje en privado (después de todo lo demás)
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (~filters.COMMAND), private_any_message))
+    app.add_handler(
+        MessageHandler(
+            filters.ChatType.PRIVATE & (~filters.COMMAND),
+            private_any_message
+        )
+    )
 
     return app
 
