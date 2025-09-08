@@ -1,7 +1,13 @@
-# Amelie — Direct Line OTC (plantillas + onboarding + Google Sheets + bienvenida/pin)
-# Requisitos: ver requirements.txt
+# Amelie — Direct Line OTC
+# Plantillas + aprobación • Onboarding Operativas/Empresas • Google Sheets • Bienvenida/pin
+# Requisitos: python-telegram-bot[job-queue]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0
 
-import os, re, json, datetime, logging, urllib.parse
+import os
+import re
+import json
+import datetime
+import logging
+import urllib.parse
 from zoneinfo import ZoneInfo
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,33 +19,20 @@ from telegram.ext import (
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- Error handler (muestra el error real con detalle) ---
-async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logging.exception("💥 Exception while handling an update:", exc_info=context.error)
-    try:
-        # Opcional: avisarte a vos en el grupo de aprobaciones
-        if ADMIN_GROUP_ID and isinstance(ADMIN_GROUP_ID, int):
-            await context.bot.send_message(
-                chat_id=ADMIN_GROUP_ID,
-                text=f"⚠️ Error en Amelie:\n{context.error}"
-            )
-    except Exception:
-        pass
-
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
 
 # ---------- Env vars ----------
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ADMIN_GROUP_ID = int(os.getenv("ADMIN_GROUP_ID", "0"))
-CHANNEL_TARGET = os.getenv("CHANNEL_TARGET")
+CHANNEL_TARGET = os.getenv("CHANNEL_TARGET")  # @TuCanal o -100...
 TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Buenos_Aires")
 POST_TIMES = os.getenv("POST_TIMES", "09:00,12:30,15:30")
 PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 
-# Números de WhatsApp (por ENV o por defecto a los que nos pasaste)
-WA_NUMBER_OPERATIVAS = os.getenv("WA_NUMBER_OPERATIVAS", "5491158770793")  # Operaciones
-WA_NUMBER_EMPRESAS   = os.getenv("WA_NUMBER_EMPRESAS",   "5491157537192")  # Empresas
+# Nros WhatsApp (defaults cargados; podés sobreescribir por ENV)
+WA_NUMBER_OPERATIVAS = os.getenv("WA_NUMBER_OPERATIVAS", "5491158770793")
+WA_NUMBER_EMPRESAS = os.getenv("WA_NUMBER_EMPRESAS", "5491157537192")
 
 GOOGLE_SHEET_ID = os.getenv("GOOGLE_SHEET_ID")
 GOOGLE_SHEETS_CREDENTIALS_JSON = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
@@ -57,7 +50,8 @@ def parse_times(times_str: str):
     out = []
     for t in times_str.split(","):
         t = t.strip()
-        if not t: continue
+        if not t:
+            continue
         hh, mm = t.split(":")
         out.append((int(hh), int(mm)))
     return out
@@ -88,7 +82,7 @@ def log_lead(row_dict: dict):
 # ---------- Plantilla de cotizaciones ----------
 def plantilla_cotizaciones(now: datetime.datetime) -> str:
     fecha = now.strftime("%d/%m/%y")
-    hora = now.strftime("%H:%M")  # ej. 15:20
+    hora = now.strftime("%H:%M")
     return f"""𝗗𝗜𝗥𝗘𝗖𝗧 𝗟𝗜𝗡𝗘 𝗢𝗧𝗖 — 𝗔𝗖𝗧𝗨𝗔𝗟𝗜𝗭𝗔𝗖𝗜𝗢́𝗡 𝗗𝗘 𝗧𝗔𝗦𝗔𝗦 〰️
 Tu línea directa a la rentabilidad
 
@@ -154,7 +148,7 @@ Diagnóstico express sin costo. Tu estructura, a tu nombre, lista para escalar.
 ⚠️ Tasas dinámicas: las cotizaciones pueden variar durante el dia por volatilidad.
 """
 
-# ---------- Estado en memoria ----------
+# ---------- Estado en memoria para previas ----------
 def pending_store(context: ContextTypes.DEFAULT_TYPE, token: str, text: str, preview_id: int):
     context.bot_data.setdefault("pending", {})[token] = {"text": text, "preview_id": preview_id}
 
@@ -165,17 +159,18 @@ def pending_set_text(context: ContextTypes.DEFAULT_TYPE, token: str, new_text: s
     if token in context.bot_data.get("pending", {}):
         context.bot_data["pending"][token]["text"] = new_text
 
+# ---------- Mensaje de bienvenida (para /bienvenida y para chats privados) ----------
+WELCOME_TEXT = (
+    "👋 *Soy Amelie*, asistente virtual de **Direct Line OTC**.\n\n"
+    "¿Sobre qué querés hablar?\n"
+    "• /operativa — Operativas financieras\n"
+    "• /empresa — Apertura de empresas internacionales"
+)
+
 # ---------- Comandos base ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info("Recibí /start de %s", update.effective_user.id)
-    await update.message.reply_text(
-        "👋 *Soy Amelie*, asistente virtual de **Direct Line OTC**.\n\n"
-        "¿Sobre qué querés hablar?\n"
-        "• /operativa — Operativas financieras\n"
-        "• /empresa — Apertura de empresas internacionales",
-        parse_mode="Markdown"
-    )
-
+    # Lo mantenemos por si alguien escribe /start, pero no es necesario con el activador por cualquier mensaje
+    await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(str(update.effective_chat.id))
@@ -188,25 +183,18 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Grupo aprobación: {ADMIN_GROUP_ID}"
     )
 
-# ---------- Comando para publicar y fijar bienvenida en el canal ----------
+# Publica y trata de fijar el mensaje de bienvenida en el canal
 async def cmd_bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    texto = (
-        "👋 *Soy Amelie*, la asistente virtual de **Direct Line OTC**.\n\n"
-        "Estoy para ayudarte con:\n"
-        "1️⃣ *Operativas financieras* (/operativa)\n"
-        "2️⃣ *Apertura de empresas internacionales* (/empresa)\n\n"
-        "Elegí una opción y te guío paso a paso. 💼💱"
-    )
     dest = parse_channel_target(CHANNEL_TARGET)
-    msg = await context.bot.send_message(chat_id=dest, text=texto, parse_mode="Markdown")
+    msg = await context.bot.send_message(chat_id=dest, text=WELCOME_TEXT, parse_mode="Markdown")
     try:
         await context.bot.pin_chat_message(chat_id=dest, message_id=msg.message_id, disable_notification=True)
     except Exception as e:
         logging.warning("No pude fijar el mensaje: %s", e)
     await update.message.reply_text("✅ Mensaje de bienvenida publicado en el canal. Si tengo permiso, quedó fijado.")
 
-# ---------- Previas automáticas ----------
-async def send_preview_cotizacion(context: ContextTypes.DEFAULT_TYPE, manual: bool=False):
+# ---------- Previas automáticas / manuales ----------
+async def send_preview_cotizacion(context: ContextTypes.DEFAULT_TYPE, manual: bool = False):
     tz = ZoneInfo(TIMEZONE)
     now = datetime.datetime.now(tz)
     text = plantilla_cotizaciones(now)
@@ -253,6 +241,7 @@ async def cmd_test_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_preview_cotizacion(context, manual=True)
 
 async def on_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Solo escuchamos replies en el grupo de aprobación
     if update.effective_chat.id != ADMIN_GROUP_ID:
         return
     if not update.message or not update.message.reply_to_message:
@@ -309,7 +298,7 @@ def schedule_jobs(app: Application):
 # ---------- Onboarding: Operativas ----------
 OP_NAME, OP_COUNTRY, OP_TYPE, OP_PROMO = range(4)
 
-async def op_start(update, context):
+async def op_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🪙 *Operativas financieras*\n\n"
         "1) ¿Cuál es tu *nombre*?",
@@ -317,12 +306,12 @@ async def op_start(update, context):
     )
     return OP_NAME
 
-async def op_name(update, context):
+async def op_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["nombre"] = update.message.text.strip()
     await update.message.reply_text("2) ¿En qué *país* estás?", parse_mode="Markdown")
     return OP_COUNTRY
 
-async def op_country(update, context):
+async def op_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["pais"] = update.message.text.strip()
     await update.message.reply_text(
         "3) ¿Qué *tipo de operación* necesitás? (Ej.: USDT↔ARS, USD↔USDT, transferencia internacional, etc.)",
@@ -330,7 +319,7 @@ async def op_country(update, context):
     )
     return OP_TYPE
 
-async def op_type(update, context):
+async def op_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["tipo"] = update.message.text.strip()
     await update.message.reply_text(
         "4) ¿Tenés *código promocional*? Si sí, escribilo. Si no, respondé “No”.",
@@ -338,15 +327,15 @@ async def op_type(update, context):
     )
     return OP_PROMO
 
-async def op_promo(update, context):
+async def op_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     promo = update.message.text.strip()
     if promo.lower() == "no":
         promo = ""
     context.user_data["promo"] = promo
 
-    nombre = context.user_data.get("nombre","")
-    pais   = context.user_data.get("pais","")
-    tipo   = context.user_data.get("tipo","")
+    nombre = context.user_data.get("nombre", "")
+    pais = context.user_data.get("pais", "")
+    tipo = context.user_data.get("tipo", "")
 
     msg = (
         f"Hola, mi nombre es {nombre}. Te escribo por una *operativa*.\n"
@@ -376,14 +365,14 @@ async def op_promo(update, context):
     )
     return ConversationHandler.END
 
-async def op_cancel(update, context):
+async def op_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Operativa cancelada. Podés reiniciar con /operativa.")
     return ConversationHandler.END
 
 # ---------- Onboarding: Empresas ----------
 EM_NAME, EM_COUNTRY, EM_RUBRO, EM_JURIS = range(4)
 
-async def em_start(update, context):
+async def em_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🏢 *Apertura de empresas internacionales*\n\n"
         "1) ¿Cuál es tu *nombre*?",
@@ -391,12 +380,12 @@ async def em_start(update, context):
     )
     return EM_NAME
 
-async def em_name(update, context):
+async def em_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["nombre"] = update.message.text.strip()
     await update.message.reply_text("2) ¿En qué *país* operás actualmente?", parse_mode="Markdown")
     return EM_COUNTRY
 
-async def em_country(update, context):
+async def em_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["pais"] = update.message.text.strip()
     await update.message.reply_text(
         "3) ¿A qué *rubro* pertenece tu negocio? (Ej.: e-commerce, agencia, servicios, etc.)",
@@ -404,7 +393,7 @@ async def em_country(update, context):
     )
     return EM_RUBRO
 
-async def em_rubro(update, context):
+async def em_rubro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["rubro"] = update.message.text.strip()
     await update.message.reply_text(
         "4) ¿Ya tenés una *jurisdicción* en mente? (USA, Panamá, Hong Kong, Europa, etc.)",
@@ -412,13 +401,13 @@ async def em_rubro(update, context):
     )
     return EM_JURIS
 
-async def em_juris(update, context):
+async def em_juris(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["juris"] = update.message.text.strip()
 
-    nombre = context.user_data.get("nombre","")
-    pais   = context.user_data.get("pais","")
-    rubro  = context.user_data.get("rubro","")
-    juris  = context.user_data.get("juris","")
+    nombre = context.user_data.get("nombre", "")
+    pais = context.user_data.get("pais", "")
+    rubro = context.user_data.get("rubro", "")
+    juris = context.user_data.get("juris", "")
 
     msg = (
         f"Hola, mi nombre es {nombre}. Te escribo porque *agendé una llamada* por *apertura de empresa*.\n"
@@ -447,16 +436,37 @@ async def em_juris(update, context):
     )
     return ConversationHandler.END
 
-async def em_cancel(update, context):
+async def em_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Proceso cancelado. Podés reiniciar con /empresa.")
     return ConversationHandler.END
+
+# ---------- Activación por cualquier mensaje en privado ----------
+async def private_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Si está en una conversación, ConversationHandler lo maneja.
+    # Si no, mostramos el menú inicial.
+    if update.effective_chat.type in ("private",):
+        await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
+
+# ---------- Error handler (muestra error real y avisa al grupo admin) ----------
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logging.exception("💥 Exception while handling an update:", exc_info=context.error)
+    try:
+        if ADMIN_GROUP_ID and isinstance(ADMIN_GROUP_ID, int):
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=f"⚠️ Error en Amelie:\n{context.error}"
+            )
+    except Exception:
+        pass
 
 # ---------- App ----------
 def build_app():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Handler de errores
+    app.add_error_handler(on_error)
+
     # Comandos base
- app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("id", cmd_id))
@@ -464,17 +474,17 @@ def build_app():
     app.add_handler(CommandHandler("plantilla", cmd_plantilla))
     app.add_handler(CommandHandler("mensaje", cmd_mensaje))
     app.add_handler(CommandHandler("test_preview", cmd_test_preview))
-    app.add_handler(CommandHandler("bienvenida", cmd_bienvenida))  # publica/fija en canal
+    app.add_handler(CommandHandler("bienvenida", cmd_bienvenida))
     app.add_handler(CallbackQueryHandler(on_button))
 
-    # 👉👉 PONER PRIMERO las conversaciones
+    # 👉 Conversaciones primero (para que no se “robe” mensajes el genérico)
     conv_op = ConversationHandler(
         entry_points=[CommandHandler("operativa", op_start)],
         states={
-            OP_NAME:    [MessageHandler(filters.TEXT & (~filters.COMMAND), op_name)],
+            OP_NAME: [MessageHandler(filters.TEXT & (~filters.COMMAND), op_name)],
             OP_COUNTRY: [MessageHandler(filters.TEXT & (~filters.COMMAND), op_country)],
-            OP_TYPE:    [MessageHandler(filters.TEXT & (~filters.COMMAND), op_type)],
-            OP_PROMO:   [MessageHandler(filters.TEXT & (~filters.COMMAND), op_promo)],
+            OP_TYPE: [MessageHandler(filters.TEXT & (~filters.COMMAND), op_type)],
+            OP_PROMO: [MessageHandler(filters.TEXT & (~filters.COMMAND), op_promo)],
         },
         fallbacks=[CommandHandler("cancel", op_cancel)],
     )
@@ -483,34 +493,43 @@ def build_app():
     conv_em = ConversationHandler(
         entry_points=[CommandHandler("empresa", em_start)],
         states={
-            EM_NAME:    [MessageHandler(filters.TEXT & (~filters.COMMAND), em_name)],
+            EM_NAME: [MessageHandler(filters.TEXT & (~filters.COMMAND), em_name)],
             EM_COUNTRY: [MessageHandler(filters.TEXT & (~filters.COMMAND), em_country)],
-            EM_RUBRO:   [MessageHandler(filters.TEXT & (~filters.COMMAND), em_rubro)],
-            EM_JURIS:   [MessageHandler(filters.TEXT & (~filters.COMMAND), em_juris)],
+            EM_RUBRO: [MessageHandler(filters.TEXT & (~filters.COMMAND), em_rubro)],
+            EM_JURIS: [MessageHandler(filters.TEXT & (~filters.COMMAND), em_juris)],
         },
         fallbacks=[CommandHandler("cancel", em_cancel)],
     )
     app.add_handler(conv_em)
 
-    # 👉👉 Recién DESPUÉS el handler genérico de respuestas (on_reply)
+    # 👉 Handler genérico de replies (solo para el grupo de aprobación)
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), on_reply))
+
+    # 👉 Activación por cualquier mensaje en privado (después de todo lo demás)
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (~filters.COMMAND), private_any_message))
 
     return app
 
-
 def main():
-    if not BOT_TOKEN: raise SystemExit("Falta TELEGRAM_BOT_TOKEN")
-    if ADMIN_GROUP_ID == 0: raise SystemExit("Falta ADMIN_GROUP_ID")
-    if not CHANNEL_TARGET: raise SystemExit("Falta CHANNEL_TARGET")
+    if not BOT_TOKEN:
+        raise SystemExit("Falta TELEGRAM_BOT_TOKEN")
+    if ADMIN_GROUP_ID == 0:
+        raise SystemExit("Falta ADMIN_GROUP_ID")
+    if not CHANNEL_TARGET:
+        raise SystemExit("Falta CHANNEL_TARGET")
 
     app = build_app()
 
-    # Limpia cualquier webhook residual y descarta updates viejos (evita conflictos)
+    # Limpia cualquier webhook residual y descarta updates viejos (evita 409)
     async def on_startup(app_):
         await app_.bot.delete_webhook(drop_pending_updates=True)
 
     app.post_init = on_startup
+
+    # Programación de previas de cotización
     schedule_jobs(app)
+
+    # Polling
     app.run_polling(allowed_updates=None)
 
 if __name__ == "__main__":
