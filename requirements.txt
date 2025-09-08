@@ -2,3 +2,4 @@ python-telegram-bot[job-queue,webhooks]==21.6
 tzdata
 gspread==6.1.2
 google-auth==2.30.0
+aiohttp
