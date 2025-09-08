@@ -1,6 +1,6 @@
-# Amelie — Direct Line OTC (Webhook)
-# Plantillas + aprobación • Onboarding Operativas/Empresas • Google Sheets • Bienvenida/pin
-# Requisitos: python-telegram-bot[job-queue,webhooks]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0
+# Amelie — Direct Line OTC (Webhook + Health Check)
+# Plantillas + aprobación • Onboarding Operativas/Empresas • Google Sheets (BG) • Bienvenida/pin
+# Requisitos: python-telegram-bot[job-queue,webhooks]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0, aiohttp
 
 import os
 import re
@@ -17,6 +17,7 @@ from telegram.ext import (
     ContextTypes, filters, JobQueue, ConversationHandler
 )
 from telegram.request import HTTPXRequest
+from aiohttp import web
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -561,7 +562,16 @@ def main():
 
     app.post_init = on_startup
 
+    # ---- AIOHTTP app para health checks (GET 200) ----
+    async def health(request):
+        return web.Response(text="ok")
+
+    aio = web.Application()
+    aio.router.add_get("/", health)
+    aio.router.add_get(f"/{url_path}", health)   # GET /webhook => 200 OK para Render
+
     app.run_webhook(
+        web_app=aio,                # usamos la app de aiohttp
         listen="0.0.0.0",
         port=port,
         url_path=url_path,
