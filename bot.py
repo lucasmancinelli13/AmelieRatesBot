@@ -1,6 +1,6 @@
-# Amelie — Direct Line OTC (Webhook + Health Check)
+# Amelie — Direct Line OTC (Webhook)
 # Plantillas + aprobación • Onboarding Operativas/Empresas • Google Sheets (BG) • Bienvenida/pin
-# Requisitos: python-telegram-bot[job-queue,webhooks]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0, aiohttp
+# Requisitos: python-telegram-bot[job-queue,webhooks]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0
 
 import os
 import re
@@ -17,7 +17,6 @@ from telegram.ext import (
     ContextTypes, filters, JobQueue, ConversationHandler
 )
 from telegram.request import HTTPXRequest
-from aiohttp import web
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -34,7 +33,7 @@ POST_TIMES = os.getenv("POST_TIMES", "09:00,12:30,15:30")
 PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 
 PUBLIC_WEBHOOK_URL = os.getenv("PUBLIC_WEBHOOK_URL")  # ej: https://tu-servicio.onrender.com (sin / al final)
-WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook")   # ruta simple para evitar ':' del token
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook")   # ruta simple (evita ':' del token)
 
 # Nros WhatsApp
 WA_NUMBER_OPERATIVAS = os.getenv("WA_NUMBER_OPERATIVAS", "5491158770793")
@@ -562,16 +561,7 @@ def main():
 
     app.post_init = on_startup
 
-    # ---- AIOHTTP app para health checks (GET 200) ----
-    async def health(request):
-        return web.Response(text="ok")
-
-    aio = web.Application()
-    aio.router.add_get("/", health)
-    aio.router.add_get(f"/{url_path}", health)   # GET /webhook => 200 OK para Render
-
     app.run_webhook(
-        web_app=aio,                # usamos la app de aiohttp
         listen="0.0.0.0",
         port=port,
         url_path=url_path,
