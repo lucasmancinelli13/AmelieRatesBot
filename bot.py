@@ -13,6 +13,19 @@ from telegram.ext import (
 import gspread
 from google.oauth2.service_account import Credentials
 
+# --- Error handler (muestra el error real con detalle) ---
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logging.exception("💥 Exception while handling an update:", exc_info=context.error)
+    try:
+        # Opcional: avisarte a vos en el grupo de aprobaciones
+        if ADMIN_GROUP_ID and isinstance(ADMIN_GROUP_ID, int):
+            await context.bot.send_message(
+                chat_id=ADMIN_GROUP_ID,
+                text=f"⚠️ Error en Amelie:\n{context.error}"
+            )
+    except Exception:
+        pass
+
 # ---------- Logging ----------
 logging.basicConfig(level=logging.INFO)
 
@@ -443,6 +456,7 @@ def build_app():
     app = Application.builder().token(BOT_TOKEN).build()
 
     # Comandos base
+ app.add_error_handler(on_error)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", start))
     app.add_handler(CommandHandler("id", cmd_id))
