@@ -8,6 +8,7 @@ import json
 import datetime
 import logging
 import urllib.parse
+import asyncio
 from zoneinfo import ZoneInfo
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -15,6 +16,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, filters, JobQueue, ConversationHandler
 )
+from telegram.request import HTTPXRequest
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -76,6 +78,11 @@ def log_lead(row_dict: dict):
     headers = ["fecha", "nombre", "pais", "flujo", "detalle", "cod_promocional", "wa_link"]
     row = [row_dict.get(h, "") for h in headers]
     ws.append_row(row, value_input_option="USER_ENTERED")
+
+# ---- Ejecutar el log a Sheets en background (no bloquear webhook) ----
+async def log_lead_bg(row_dict: dict):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, log_lead, row_dict)
 
 # ---------- Plantilla ----------
 def plantilla_cotizaciones(now: datetime.datetime) -> str:
@@ -337,11 +344,18 @@ async def op_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_OPERATIVAS}?text={wa_text}"
 
-    # Registrar en Sheets (no frena si falla)
+    # 1) Responder YA para no bloquear el webhook
+    await update.message.reply_text(
+        "✅ ¡Gracias! Te derivo con el equipo operativo.\n"
+        f"Tocá este enlace para continuar por WhatsApp:\n{wa_link}",
+        parse_mode="Markdown"
+    )
+
+    # 2) Log a Sheets en background
     try:
         tz = ZoneInfo(TIMEZONE)
         now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-        log_lead({
+        data = {
             "fecha": now,
             "nombre": nombre,
             "pais": pais,
@@ -349,15 +363,11 @@ async def op_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "detalle": tipo,
             "cod_promocional": promo,
             "wa_link": wa_link
-        })
+        }
+        asyncio.create_task(log_lead_bg(data))
     except Exception as e:
-        logging.warning("No pude registrar en Google Sheets (Operativa): %s", e)
+        logging.warning("No pude lanzar log a Google Sheets (Operativa): %s", e)
 
-    await update.message.reply_text(
-        "✅ ¡Gracias! Te derivo con el equipo operativo.\n"
-        f"Tocá este enlace para continuar por WhatsApp:\n{wa_link}",
-        parse_mode="Markdown"
-    )
     return ConversationHandler.END
 
 async def op_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -413,11 +423,17 @@ async def em_juris(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_EMPRESAS}?text={wa_text}"
 
-    # Registrar en Sheets (no frena si falla)
+    # 1) Responder YA para no bloquear el webhook
+    await update.message.reply_text(
+        "✅ ¡Perfecto! Tocá este enlace para coordinar por WhatsApp:\n" + wa_link,
+        parse_mode="Markdown"
+    )
+
+    # 2) Log a Sheets en background
     try:
         tz = ZoneInfo(TIMEZONE)
         now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-        log_lead({
+        data = {
             "fecha": now,
             "nombre": nombre,
             "pais": pais,
@@ -425,14 +441,11 @@ async def em_juris(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "detalle": f"Rubro: {rubro} | Jurisdicción: {juris}",
             "cod_promocional": "",
             "wa_link": wa_link
-        })
+        }
+        asyncio.create_task(log_lead_bg(data))
     except Exception as e:
-        logging.warning("No pude registrar en Google Sheets (Empresa): %s", e)
+        logging.warning("No pude lanzar log a Google Sheets (Empresa): %s", e)
 
-    await update.message.reply_text(
-        "✅ ¡Perfecto! Tocá este enlace para coordinar por WhatsApp:\n" + wa_link,
-        parse_mode="Markdown"
-    )
     return ConversationHandler.END
 
 async def em_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -458,7 +471,14 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- App ----------
 def build_app():
-    app = Application.builder().token(BOT_TOKEN).build()
+    # cliente HTTP con timeouts más altos (evita TimedOut por red lenta)
+    request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+    app = Application.builder().token(BOT_TOKEN).request(request).build()
     app.add_error_handler(on_error)
 
     # Comandos base
