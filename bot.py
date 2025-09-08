@@ -1,4 +1,4 @@
-# Amelie — Direct Line OTC
+# Amelie — Direct Line OTC (Webhook)
 # Plantillas + aprobación • Onboarding Operativas/Empresas • Google Sheets • Bienvenida/pin
 # Requisitos: python-telegram-bot[job-queue]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0
 
@@ -30,7 +30,10 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Buenos_Aires")
 POST_TIMES = os.getenv("POST_TIMES", "09:00,12:30,15:30")
 PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 
-# Nros WhatsApp (defaults; podés sobreescribir por ENV)
+# Webhook
+PUBLIC_WEBHOOK_URL = os.getenv("PUBLIC_WEBHOOK_URL")  # ej: https://tu-servicio.onrender.com
+
+# Nros WhatsApp
 WA_NUMBER_OPERATIVAS = os.getenv("WA_NUMBER_OPERATIVAS", "5491158770793")
 WA_NUMBER_EMPRESAS = os.getenv("WA_NUMBER_EMPRESAS", "5491157537192")
 
@@ -57,29 +60,24 @@ def parse_times(times_str: str):
     return out
 
 def get_sheet():
-    """Devuelve la primera hoja del spreadsheet conectado."""
     if not GOOGLE_SHEET_ID:
         raise SystemExit("Falta GOOGLE_SHEET_ID")
     if not GOOGLE_SHEETS_CREDENTIALS_JSON:
         raise SystemExit("Falta GOOGLE_SHEETS_CREDENTIALS_JSON")
-
     creds_dict = json.loads(GOOGLE_SHEETS_CREDENTIALS_JSON)
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(GOOGLE_SHEET_ID)
-    return sh.sheet1  # usa la 1ª pestaña
+    return sh.sheet1
 
 def log_lead(row_dict: dict):
-    """
-    row_dict: {"fecha","nombre","pais","flujo","detalle","cod_promocional","wa_link"}
-    """
     ws = get_sheet()
     headers = ["fecha", "nombre", "pais", "flujo", "detalle", "cod_promocional", "wa_link"]
     row = [row_dict.get(h, "") for h in headers]
     ws.append_row(row, value_input_option="USER_ENTERED")
 
-# ---------- Plantilla de cotizaciones ----------
+# ---------- Plantilla ----------
 def plantilla_cotizaciones(now: datetime.datetime) -> str:
     fecha = now.strftime("%d/%m/%y")
     hora = now.strftime("%H:%M")
@@ -148,7 +146,7 @@ Diagnóstico express sin costo. Tu estructura, a tu nombre, lista para escalar.
 ⚠️ Tasas dinámicas: las cotizaciones pueden variar durante el dia por volatilidad.
 """
 
-# ---------- Estado en memoria para previas ----------
+# ---------- Previas ----------
 def pending_store(context: ContextTypes.DEFAULT_TYPE, token: str, text: str, preview_id: int):
     context.bot_data.setdefault("pending", {})[token] = {"text": text, "preview_id": preview_id}
 
@@ -159,7 +157,6 @@ def pending_set_text(context: ContextTypes.DEFAULT_TYPE, token: str, new_text: s
     if token in context.bot_data.get("pending", {}):
         context.bot_data["pending"][token]["text"] = new_text
 
-# ---------- Mensaje de bienvenida (para /bienvenida y para chats privados) ----------
 WELCOME_TEXT = (
     "👋 *Soy Amelie*, asistente virtual de **Direct Line OTC**.\n\n"
     "¿Sobre qué querés hablar?\n"
@@ -169,7 +166,6 @@ WELCOME_TEXT = (
 
 # ---------- Comandos base ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Por si alguien usa /start, pero no es necesario con el activador por cualquier mensaje privado
     await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
 async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,7 +179,6 @@ async def cmd_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Grupo aprobación: {ADMIN_GROUP_ID}"
     )
 
-# Publica y trata de fijar el mensaje de bienvenida en el canal
 async def cmd_bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dest = parse_channel_target(CHANNEL_TARGET)
     msg = await context.bot.send_message(chat_id=dest, text=WELCOME_TEXT, parse_mode="Markdown")
@@ -193,18 +188,15 @@ async def cmd_bienvenida(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.warning("No pude fijar el mensaje: %s", e)
     await update.message.reply_text("✅ Mensaje de bienvenida publicado en el canal. Si tengo permiso, quedó fijado.")
 
-# ---------- Previas automáticas / manuales ----------
 async def send_preview_cotizacion(context: ContextTypes.DEFAULT_TYPE, manual: bool = False):
     tz = ZoneInfo(TIMEZONE)
     now = datetime.datetime.now(tz)
     text = plantilla_cotizaciones(now)
     token = now.strftime("%Y%m%d%H%M%S")
-
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Aprobar y Publicar", callback_data=f"approve:{token}")],
         [InlineKeyboardButton("⏭️ Omitir", callback_data=f"skip:{token}")]
     ])
-
     guide = await context.bot.send_message(
         chat_id=ADMIN_GROUP_ID,
         text="📋 PREVIA DE COTIZACIÓN\n"
@@ -240,7 +232,6 @@ async def cmd_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_test_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_preview_cotizacion(context, manual=True)
 
-# Respuestas en el grupo de aprobación (solo si es reply al mensaje guía)
 async def on_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID:
         return
@@ -264,7 +255,6 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not item:
         await q.edit_message_text("No encontré contenido pendiente (ya aprobado/omitido).")
         return
-
     if action == "approve":
         dest = parse_channel_target(CHANNEL_TARGET)
         text = item["text"]
@@ -346,7 +336,6 @@ async def op_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_OPERATIVAS}?text={wa_text}"
 
-    # Guardar en Sheets (no frenar si falla)
     try:
         tz = ZoneInfo(TIMEZONE)
         now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
@@ -422,7 +411,6 @@ async def em_juris(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_EMPRESAS}?text={wa_text}"
 
-    # Guardar en Sheets (no frenar si falla)
     try:
         tz = ZoneInfo(TIMEZONE)
         now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
@@ -450,12 +438,10 @@ async def em_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Activación por cualquier mensaje en privado ----------
 async def private_any_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Si está en una conversación, ConversationHandler lo maneja.
-    # Si no, mostramos el menú inicial.
     if update.effective_chat.type in ("private",):
         await update.message.reply_text(WELCOME_TEXT, parse_mode="Markdown")
 
-# ---------- Error handler (muestra error real y avisa al grupo admin) ----------
+# ---------- Error handler ----------
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     logging.exception("💥 Exception while handling an update:", exc_info=context.error)
     try:
@@ -470,8 +456,6 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
 # ---------- App ----------
 def build_app():
     app = Application.builder().token(BOT_TOKEN).build()
-
-    # Handler de errores
     app.add_error_handler(on_error)
 
     # Comandos base
@@ -485,7 +469,7 @@ def build_app():
     app.add_handler(CommandHandler("bienvenida", cmd_bienvenida))
     app.add_handler(CallbackQueryHandler(on_button))
 
-    # 👉 Conversaciones primero
+    # Conversaciones
     conv_op = ConversationHandler(
         entry_points=[CommandHandler("operativa", op_start)],
         states={
@@ -510,7 +494,7 @@ def build_app():
     )
     app.add_handler(conv_em)
 
-    # 👉 Handler genérico de replies SOLO en el grupo de aprobación y SOLO si es reply
+    # Replies solo en grupo de aprobación y si es reply
     app.add_handler(
         MessageHandler(
             filters.Chat(chat_id=ADMIN_GROUP_ID) & filters.REPLY & filters.TEXT & (~filters.COMMAND),
@@ -518,7 +502,7 @@ def build_app():
         )
     )
 
-    # 👉 Activación por cualquier mensaje en privado (después de todo lo demás)
+    # Activación por cualquier mensaje en privado
     app.add_handler(
         MessageHandler(
             filters.ChatType.PRIVATE & (~filters.COMMAND),
@@ -535,20 +519,34 @@ def main():
         raise SystemExit("Falta ADMIN_GROUP_ID")
     if not CHANNEL_TARGET:
         raise SystemExit("Falta CHANNEL_TARGET")
+    if not PUBLIC_WEBHOOK_URL:
+        raise SystemExit("Falta PUBLIC_WEBHOOK_URL (ej: https://<servicio>.onrender.com)")
 
     app = build_app()
 
-    # Limpia cualquier webhook residual y descarta updates viejos (evita 409)
+    # Programación de previas
+    schedule_jobs(app)
+
+    # --- Webhook setup ---
+    # Escuchar en el puerto que Render expone
+    port = int(os.environ.get("PORT", "8080"))
+    # Usamos el token como url_path (suficientemente aleatorio)
+    url_path = BOT_TOKEN
+    webhook_url = f"{PUBLIC_WEBHOOK_URL}/{url_path}"
+
     async def on_startup(app_):
+        # Limpia webhook previo y setea el nuevo
         await app_.bot.delete_webhook(drop_pending_updates=True)
+        await app_.bot.set_webhook(url=webhook_url)
 
     app.post_init = on_startup
 
-    # Programación de previas de cotización
-    schedule_jobs(app)
-
-    # Polling
-    app.run_polling(allowed_updates=None)
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=url_path,
+        webhook_url=webhook_url,
+    )
 
 if __name__ == "__main__":
     main()
