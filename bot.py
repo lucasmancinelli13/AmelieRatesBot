@@ -1,6 +1,6 @@
 # Amelie — Direct Line OTC (Webhook)
 # Plantillas + aprobación • Onboarding Operativas/Empresas • Google Sheets • Bienvenida/pin
-# Requisitos: python-telegram-bot[job-queue]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0
+# Requisitos: python-telegram-bot[job-queue,webhooks]==21.6, tzdata, gspread==6.1.2, google-auth==2.30.0
 
 import os
 import re
@@ -30,8 +30,8 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Buenos_Aires")
 POST_TIMES = os.getenv("POST_TIMES", "09:00,12:30,15:30")
 PREVIEW_OFFSET_MINUTES = int(os.getenv("PREVIEW_OFFSET_MINUTES", "10"))
 
-# Webhook
-PUBLIC_WEBHOOK_URL = os.getenv("PUBLIC_WEBHOOK_URL")  # ej: https://tu-servicio.onrender.com
+PUBLIC_WEBHOOK_URL = os.getenv("PUBLIC_WEBHOOK_URL")  # ej: https://tu-servicio.onrender.com (sin / al final)
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "webhook")   # ruta simple para evitar ':' del token
 
 # Nros WhatsApp
 WA_NUMBER_OPERATIVAS = os.getenv("WA_NUMBER_OPERATIVAS", "5491158770793")
@@ -232,6 +232,7 @@ async def cmd_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_test_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_preview_cotizacion(context, manual=True)
 
+# Respuestas en el grupo de aprobación (solo si es reply al mensaje guía)
 async def on_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != ADMIN_GROUP_ID:
         return
@@ -336,6 +337,7 @@ async def op_promo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_OPERATIVAS}?text={wa_text}"
 
+    # Registrar en Sheets (no frena si falla)
     try:
         tz = ZoneInfo(TIMEZONE)
         now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
@@ -411,6 +413,7 @@ async def em_juris(update: Update, context: ContextTypes.DEFAULT_TYPE):
     wa_text = urllib.parse.quote(msg)
     wa_link = f"https://wa.me/{WA_NUMBER_EMPRESAS}?text={wa_text}"
 
+    # Registrar en Sheets (no frena si falla)
     try:
         tz = ZoneInfo(TIMEZONE)
         now = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M")
@@ -527,15 +530,12 @@ def main():
     # Programación de previas
     schedule_jobs(app)
 
-    # --- Webhook setup ---
-    # Escuchar en el puerto que Render expone
+    # --- Webhook setup con ruta simple ---
     port = int(os.environ.get("PORT", "8080"))
-    # Usamos el token como url_path (suficientemente aleatorio)
-    url_path = BOT_TOKEN
+    url_path = WEBHOOK_PATH  # SIN el token
     webhook_url = f"{PUBLIC_WEBHOOK_URL}/{url_path}"
 
     async def on_startup(app_):
-        # Limpia webhook previo y setea el nuevo
         await app_.bot.delete_webhook(drop_pending_updates=True)
         await app_.bot.set_webhook(url=webhook_url)
 
